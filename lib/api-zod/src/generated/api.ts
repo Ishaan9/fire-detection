@@ -14,3 +14,11 @@ import * as zod from "zod";
 export const HealthCheckResponse = zod.object({
   status: zod.string(),
 });
+
+/**
+ * Upload a video file and detect the first occurrence of fire. Streams SSE events with progress and result.
+ * @summary Analyze video for fire detection
+ */
+export const AnalyzeVideoBody = zod.object({
+  video: zod.instanceof(File).describe("Video file to analyze"),
+});

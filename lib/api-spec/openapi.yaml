@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: fire-detection
+    description: Fire detection operations
 paths:
   /healthz:
     get:
@@ -24,6 +26,44 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /fire-detection/analyze:
+    post:
+      operationId: analyzeVideo
+      tags: [fire-detection]
+      summary: Analyze video for fire detection
+      description: Upload a video file and detect the first occurrence of fire. Streams SSE events with progress and result.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                video:
+                  type: string
+                  format: binary
+                  description: Video file to analyze
+              required:
+                - video
+      responses:
+        "200":
+          description: SSE stream with detection progress and result
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   schemas:
     HealthStatus:
@@ -33,4 +73,31 @@ components:
           type: string
       required:
         - status
-
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+    FireDetectionResult:
+      type: object
+      properties:
+        detected:
+          type: boolean
+          description: Whether fire was detected
+        timestamp:
+          type: number
+          description: Timestamp in seconds where fire was first detected
+        timestampFormatted:
+          type: string
+          description: Human-readable timestamp (e.g. "00:01:23")
+        confidence:
+          type: string
+          description: Confidence description from the model
+        message:
+          type: string
+          description: Human-readable result message
+      required:
+        - detected
+        - message

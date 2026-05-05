@@ -5,18 +5,25 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import type {
+  MutationFunction,
   QueryFunction,
   QueryKey,
+  UseMutationOptions,
+  UseMutationResult,
   UseQueryOptions,
   UseQueryResult,
 } from "@tanstack/react-query";
 
-import type { HealthStatus } from "./api.schemas";
+import type {
+  AnalyzeVideoBody,
+  ErrorResponse,
+  HealthStatus,
+} from "./api.schemas";
 
 import { customFetch } from "../custom-fetch";
-import type { ErrorType } from "../custom-fetch";
+import type { ErrorType, BodyType } from "../custom-fetch";
 
 type AwaitedInput<T> = PromiseLike<T> | T;
 
@@ -99,3 +106,92 @@ export function useHealthCheck<
 
   return { ...query, queryKey: queryOptions.queryKey };
 }
+
+/**
+ * Upload a video file and detect the first occurrence of fire. Streams SSE events with progress and result.
+ * @summary Analyze video for fire detection
+ */
+export const getAnalyzeVideoUrl = () => {
+  return `/api/fire-detection/analyze`;
+};
+
+export const analyzeVideo = async (
+  analyzeVideoBody: AnalyzeVideoBody,
+  options?: RequestInit,
+): Promise<string> => {
+  const formData = new FormData();
+  formData.append(`video`, analyzeVideoBody.video);
+
+  return customFetch<string>(getAnalyzeVideoUrl(), {
+    ...options,
+    method: "POST",
+    body: formData,
+  });
+};
+
+export const getAnalyzeVideoMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof analyzeVideo>>,
+    TError,
+    { data: BodyType<AnalyzeVideoBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof analyzeVideo>>,
+  TError,
+  { data: BodyType<AnalyzeVideoBody> },
+  TContext
+> => {
+  const mutationKey = ["analyzeVideo"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof analyzeVideo>>,
+    { data: BodyType<AnalyzeVideoBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return analyzeVideo(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type AnalyzeVideoMutationResult = NonNullable<
+  Awaited<ReturnType<typeof analyzeVideo>>
+>;
+export type AnalyzeVideoMutationBody = BodyType<AnalyzeVideoBody>;
+export type AnalyzeVideoMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Analyze video for fire detection
+ */
+export const useAnalyzeVideo = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof analyzeVideo>>,
+    TError,
+    { data: BodyType<AnalyzeVideoBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof analyzeVideo>>,
+  TError,
+  { data: BodyType<AnalyzeVideoBody> },
+  TContext
+> => {
+  return useMutation(getAnalyzeVideoMutationOptions(options));
+};
