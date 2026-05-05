@@ -8,5 +8,7 @@
 
 export * from "./analyzeVideoBody";
 export * from "./errorResponse";
+export * from "./fireDetectionRecord";
 export * from "./fireDetectionResult";
 export * from "./healthStatus";
+export * from "./successResponse";

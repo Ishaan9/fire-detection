@@ -7,13 +7,15 @@ import path from "path";
 import os from "os";
 import { ai } from "@workspace/integrations-gemini-ai";
 import { isRateLimitError } from "@workspace/integrations-gemini-ai/batch";
+import { db, fireDetectionsTable } from "@workspace/db";
+import { eq } from "drizzle-orm";
 
 const router = Router();
 const execFileAsync = promisify(execFile);
 
 const upload = multer({
   dest: os.tmpdir(),
-  limits: { fileSize: 500 * 1024 * 1024 }, // 500MB max
+  limits: { fileSize: 500 * 1024 * 1024 },
 });
 
 function formatTimestamp(seconds: number): string {
@@ -28,12 +30,9 @@ function formatTimestamp(seconds: number): string {
 
 async function getVideoDuration(videoPath: string): Promise<number> {
   const { stdout } = await execFileAsync("ffprobe", [
-    "-v",
-    "error",
-    "-show_entries",
-    "format=duration",
-    "-of",
-    "default=noprint_wrappers=1:nokey=1",
+    "-v", "error",
+    "-show_entries", "format=duration",
+    "-of", "default=noprint_wrappers=1:nokey=1",
     videoPath,
   ]);
   return parseFloat(stdout.trim()) || 0;
@@ -45,25 +44,18 @@ async function extractFrame(
   outputPath: string
 ): Promise<void> {
   await execFileAsync("ffmpeg", [
-    "-ss",
-    String(timestamp),
-    "-i",
-    videoPath,
-    "-vframes",
-    "1",
-    "-vf",
-    "scale=640:-1",
-    "-q:v",
-    "3",
-    "-y",
-    outputPath,
+    "-ss", String(timestamp),
+    "-i", videoPath,
+    "-vframes", "1",
+    "-vf", "scale=640:-1",
+    "-q:v", "3",
+    "-y", outputPath,
   ]);
 }
 
 async function analyzeFramesForFire(
   framePaths: { path: string; timestamp: number }[]
 ): Promise<{ detected: boolean; frameIndex: number; confidence: string } | null> {
-  // Convert frames to base64 and build a multi-image prompt
   const parts: { inlineData?: { mimeType: string; data: string }; text?: string }[] = [];
 
   parts.push({
@@ -99,10 +91,7 @@ Respond with JSON only, in this exact format:
       const response = await ai.models.generateContent({
         model: "gemini-2.5-flash",
         contents: [{ role: "user", parts }],
-        config: {
-          responseMimeType: "application/json",
-          maxOutputTokens: 8192,
-        },
+        config: { responseMimeType: "application/json", maxOutputTokens: 8192 },
       });
 
       const text = response.text ?? "{}";
@@ -114,11 +103,7 @@ Respond with JSON only, in this exact format:
       };
 
       if (parsed.fireDetected && parsed.firstFireFrameIndex !== null) {
-        return {
-          detected: true,
-          frameIndex: parsed.firstFireFrameIndex,
-          confidence: parsed.confidence ?? "medium",
-        };
+        return { detected: true, frameIndex: parsed.firstFireFrameIndex, confidence: parsed.confidence ?? "medium" };
       }
       return { detected: false, frameIndex: -1, confidence: parsed.confidence ?? "medium" };
     } catch (err) {
@@ -134,6 +119,44 @@ Respond with JSON only, in this exact format:
   throw lastError;
 }
 
+// GET /fire-detection/history
+router.get("/fire-detection/history", async (req, res) => {
+  try {
+    const records = await db
+      .select()
+      .from(fireDetectionsTable)
+      .orderBy(fireDetectionsTable.createdAt);
+    res.json(records.reverse());
+  } catch (err) {
+    req.log?.error({ err }, "Failed to fetch history");
+    res.status(500).json({ error: "Failed to fetch history" });
+  }
+});
+
+// DELETE /fire-detection/history/:id
+router.delete("/fire-detection/history/:id", async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) {
+    res.status(400).json({ error: "Invalid id" });
+    return;
+  }
+  try {
+    const deleted = await db
+      .delete(fireDetectionsTable)
+      .where(eq(fireDetectionsTable.id, id))
+      .returning();
+    if (deleted.length === 0) {
+      res.status(404).json({ error: "Record not found" });
+      return;
+    }
+    res.json({ success: true });
+  } catch (err) {
+    req.log?.error({ err }, "Failed to delete history record");
+    res.status(500).json({ error: "Failed to delete record" });
+  }
+});
+
+// POST /fire-detection/analyze
 router.post(
   "/fire-detection/analyze",
   upload.single("video"),
@@ -160,6 +183,7 @@ router.post(
       sendEvent({ type: "progress", message: "Reading video metadata…", current: 0, total: 100 });
 
       const videoPath = file.path;
+      const videoName = (file.originalname as string) || "unknown.mp4";
       const duration = await getVideoDuration(videoPath);
 
       if (duration <= 0) {
@@ -168,7 +192,6 @@ router.post(
         return;
       }
 
-      // Sample 1 frame per second, max 120 frames (2 min effective limit for inline data)
       const sampleInterval = Math.max(1, Math.ceil(duration / 120));
       const timestamps: number[] = [];
       for (let t = 0; t < duration; t += sampleInterval) {
@@ -196,7 +219,7 @@ router.post(
               await extractFrame(videoPath, ts, framePath);
               framePaths.push({ path: framePath, timestamp: ts });
             } catch {
-              // Skip frames that fail to extract
+              // skip failed frames
             }
           })
         );
@@ -209,7 +232,6 @@ router.post(
         });
       }
 
-      // Sort by timestamp
       framePaths.sort((a, b) => a.timestamp - b.timestamp);
 
       if (framePaths.length === 0) {
@@ -225,9 +247,8 @@ router.post(
         total: 100,
       });
 
-      // Analyze frames in chunks of 8 (keeps each request well under 8MB inline limit)
       const chunkSize = 8;
-      let fireDetectedAt: { timestamp: number; confidence: string } | null = null;
+      let fireDetectedAt: { timestamp: number; confidence: string; framePath: string } | null = null;
       let analyzedChunks = 0;
       const totalChunks = Math.ceil(framePaths.length / chunkSize);
 
@@ -248,8 +269,12 @@ router.post(
         const result = await analyzeFramesForFire(chunk);
 
         if (result?.detected && result.frameIndex >= 0 && result.frameIndex < chunk.length) {
-          const detectedTimestamp = chunk[result.frameIndex].timestamp;
-          fireDetectedAt = { timestamp: detectedTimestamp, confidence: result.confidence };
+          const detectedFrame = chunk[result.frameIndex];
+          fireDetectedAt = {
+            timestamp: detectedFrame.timestamp,
+            confidence: result.confidence,
+            framePath: detectedFrame.path,
+          };
           break;
         }
       }
@@ -257,15 +282,53 @@ router.post(
       sendEvent({ type: "progress", message: "Analysis complete.", current: 100, total: 100 });
 
       if (fireDetectedAt) {
+        // Read thumbnail as base64
+        let thumbnailBase64: string | null = null;
+        try {
+          const thumbData = await fs.readFile(fireDetectedAt.framePath);
+          thumbnailBase64 = `data:image/jpeg;base64,${thumbData.toString("base64")}`;
+        } catch {
+          // thumbnail is best-effort
+        }
+
+        // Persist to history
+        try {
+          await db.insert(fireDetectionsTable).values({
+            videoName,
+            detected: true,
+            detectedAtSeconds: fireDetectedAt.timestamp,
+            timestampFormatted: formatTimestamp(fireDetectedAt.timestamp),
+            confidence: fireDetectedAt.confidence,
+            thumbnailBase64,
+          });
+        } catch (err) {
+          req.log?.error({ err }, "Failed to save detection to history");
+        }
+
         sendEvent({
           type: "result",
           detected: true,
           timestamp: fireDetectedAt.timestamp,
           timestampFormatted: formatTimestamp(fireDetectedAt.timestamp),
           confidence: fireDetectedAt.confidence,
+          thumbnailBase64,
           message: `Fire first detected at ${formatTimestamp(fireDetectedAt.timestamp)}`,
         });
       } else {
+        // Persist no-fire result
+        try {
+          await db.insert(fireDetectionsTable).values({
+            videoName,
+            detected: false,
+            detectedAtSeconds: null,
+            timestampFormatted: null,
+            confidence: null,
+            thumbnailBase64: null,
+          });
+        } catch (err) {
+          req.log?.error({ err }, "Failed to save no-detection to history");
+        }
+
         sendEvent({
           type: "result",
           detected: false,
@@ -280,18 +343,13 @@ router.post(
       sendEvent({ type: "error", message });
       res.end();
     } finally {
-      // Cleanup temp files
       try {
         await fs.rm(tempDir, { recursive: true, force: true });
-      } catch {
-        // ignore cleanup errors
-      }
+      } catch { /* ignore */ }
       if (file?.path) {
         try {
           await fs.unlink(file.path);
-        } catch {
-          // ignore
-        }
+        } catch { /* ignore */ }
       }
     }
   }

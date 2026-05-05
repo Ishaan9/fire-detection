@@ -19,7 +19,9 @@ import type {
 import type {
   AnalyzeVideoBody,
   ErrorResponse,
+  FireDetectionRecord,
   HealthStatus,
+  SuccessResponse,
 } from "./api.schemas";
 
 import { customFetch } from "../custom-fetch";
@@ -194,4 +196,165 @@ export const useAnalyzeVideo = <
   TContext
 > => {
   return useMutation(getAnalyzeVideoMutationOptions(options));
+};
+
+/**
+ * Returns a list of past fire detection analyses
+ * @summary Get fire detection history
+ */
+export const getGetFireDetectionHistoryUrl = () => {
+  return `/api/fire-detection/history`;
+};
+
+export const getFireDetectionHistory = async (
+  options?: RequestInit,
+): Promise<FireDetectionRecord[]> => {
+  return customFetch<FireDetectionRecord[]>(getGetFireDetectionHistoryUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetFireDetectionHistoryQueryKey = () => {
+  return [`/api/fire-detection/history`] as const;
+};
+
+export const getGetFireDetectionHistoryQueryOptions = <
+  TData = Awaited<ReturnType<typeof getFireDetectionHistory>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getFireDetectionHistory>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetFireDetectionHistoryQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getFireDetectionHistory>>
+  > = ({ signal }) => getFireDetectionHistory({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getFireDetectionHistory>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetFireDetectionHistoryQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getFireDetectionHistory>>
+>;
+export type GetFireDetectionHistoryQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Get fire detection history
+ */
+
+export function useGetFireDetectionHistory<
+  TData = Awaited<ReturnType<typeof getFireDetectionHistory>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getFireDetectionHistory>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetFireDetectionHistoryQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Delete a fire detection record
+ */
+export const getDeleteFireDetectionRecordUrl = (id: number) => {
+  return `/api/fire-detection/history/${id}`;
+};
+
+export const deleteFireDetectionRecord = async (
+  id: number,
+  options?: RequestInit,
+): Promise<SuccessResponse> => {
+  return customFetch<SuccessResponse>(getDeleteFireDetectionRecordUrl(id), {
+    ...options,
+    method: "DELETE",
+  });
+};
+
+export const getDeleteFireDetectionRecordMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof deleteFireDetectionRecord>>,
+    TError,
+    { id: number },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof deleteFireDetectionRecord>>,
+  TError,
+  { id: number },
+  TContext
+> => {
+  const mutationKey = ["deleteFireDetectionRecord"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof deleteFireDetectionRecord>>,
+    { id: number }
+  > = (props) => {
+    const { id } = props ?? {};
+
+    return deleteFireDetectionRecord(id, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type DeleteFireDetectionRecordMutationResult = NonNullable<
+  Awaited<ReturnType<typeof deleteFireDetectionRecord>>
+>;
+
+export type DeleteFireDetectionRecordMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Delete a fire detection record
+ */
+export const useDeleteFireDetectionRecord = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof deleteFireDetectionRecord>>,
+    TError,
+    { id: number },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof deleteFireDetectionRecord>>,
+  TError,
+  { id: number },
+  TContext
+> => {
+  return useMutation(getDeleteFireDetectionRecordMutationOptions(options));
 };

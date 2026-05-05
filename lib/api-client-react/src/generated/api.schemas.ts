@@ -13,17 +13,28 @@ export interface ErrorResponse {
   error: string;
 }
 
+export interface SuccessResponse {
+  success: boolean;
+}
+
 export interface FireDetectionResult {
-  /** Whether fire was detected */
   detected: boolean;
-  /** Timestamp in seconds where fire was first detected */
   timestamp?: number;
-  /** Human-readable timestamp (e.g. "00:01:23") */
   timestampFormatted?: string;
-  /** Confidence description from the model */
   confidence?: string;
-  /** Human-readable result message */
+  thumbnailBase64?: string;
   message: string;
+}
+
+export interface FireDetectionRecord {
+  id: number;
+  videoName: string;
+  detected: boolean;
+  detectedAtSeconds?: number | null;
+  timestampFormatted?: string | null;
+  confidence?: string | null;
+  thumbnailBase64?: string | null;
+  createdAt: string;
 }
 
 export type AnalyzeVideoBody = {

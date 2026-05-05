@@ -22,3 +22,32 @@ export const HealthCheckResponse = zod.object({
 export const AnalyzeVideoBody = zod.object({
   video: zod.instanceof(File).describe("Video file to analyze"),
 });
+
+/**
+ * Returns a list of past fire detection analyses
+ * @summary Get fire detection history
+ */
+export const GetFireDetectionHistoryResponseItem = zod.object({
+  id: zod.number(),
+  videoName: zod.string(),
+  detected: zod.boolean(),
+  detectedAtSeconds: zod.number().nullish(),
+  timestampFormatted: zod.string().nullish(),
+  confidence: zod.string().nullish(),
+  thumbnailBase64: zod.string().nullish(),
+  createdAt: zod.coerce.date(),
+});
+export const GetFireDetectionHistoryResponse = zod.array(
+  GetFireDetectionHistoryResponseItem,
+);
+
+/**
+ * @summary Delete a fire detection record
+ */
+export const DeleteFireDetectionRecordParams = zod.object({
+  id: zod.coerce.number(),
+});
+
+export const DeleteFireDetectionRecordResponse = zod.object({
+  success: zod.boolean(),
+});

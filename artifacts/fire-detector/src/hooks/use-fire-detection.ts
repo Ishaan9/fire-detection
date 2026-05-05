@@ -15,6 +15,7 @@ export interface ResultEvent {
   timestamp?: number;
   timestampFormatted?: string;
   confidence?: string;
+  thumbnailBase64?: string;
   message: string;
 }
 
@@ -77,7 +78,6 @@ export function useFireDetection() {
           if (line.startsWith("data: ")) {
             try {
               const event = JSON.parse(line.slice(6)) as AnalysisEvent;
-
               switch (event.type) {
                 case "progress":
                   setProgress(event);
@@ -97,19 +97,14 @@ export function useFireDetection() {
           }
         }
       }
-      
-      // If stream ended but we didn't get a result or error
+
       setStatus((prev) => {
         if (prev === "analyzing") return "complete";
         return prev;
       });
-
-    } catch (err: any) {
-      if (err.name === "AbortError") {
-        console.log("Analysis aborted");
-        return;
-      }
-      setError(err.message || "An unexpected error occurred");
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === "AbortError") return;
+      setError(err instanceof Error ? err.message : "An unexpected error occurred");
       setStatus("error");
     }
   }, []);
@@ -125,12 +120,5 @@ export function useFireDetection() {
     setError(null);
   }, []);
 
-  return {
-    status,
-    progress,
-    result,
-    error,
-    analyze,
-    reset,
-  };
+  return { status, progress, result, error, analyze, reset };
 }

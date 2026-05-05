@@ -64,6 +64,45 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /fire-detection/history:
+    get:
+      operationId: getFireDetectionHistory
+      tags: [fire-detection]
+      summary: Get fire detection history
+      description: Returns a list of past fire detection analyses
+      responses:
+        "200":
+          description: List of fire detection records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/FireDetectionRecord"
+  /fire-detection/history/{id}:
+    delete:
+      operationId: deleteFireDetectionRecord
+      tags: [fire-detection]
+      summary: Delete a fire detection record
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Record deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "404":
+          description: Record not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   schemas:
     HealthStatus:
@@ -80,24 +119,57 @@ components:
           type: string
       required:
         - error
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+      required:
+        - success
     FireDetectionResult:
       type: object
       properties:
         detected:
           type: boolean
-          description: Whether fire was detected
         timestamp:
           type: number
-          description: Timestamp in seconds where fire was first detected
         timestampFormatted:
           type: string
-          description: Human-readable timestamp (e.g. "00:01:23")
         confidence:
           type: string
-          description: Confidence description from the model
+        thumbnailBase64:
+          type: string
         message:
           type: string
-          description: Human-readable result message
       required:
         - detected
         - message
+    FireDetectionRecord:
+      type: object
+      properties:
+        id:
+          type: integer
+        videoName:
+          type: string
+        detected:
+          type: boolean
+        detectedAtSeconds:
+          type: number
+          nullable: true
+        timestampFormatted:
+          type: string
+          nullable: true
+        confidence:
+          type: string
+          nullable: true
+        thumbnailBase64:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - videoName
+        - detected
+        - createdAt

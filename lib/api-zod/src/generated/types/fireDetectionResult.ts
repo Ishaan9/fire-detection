@@ -7,14 +7,10 @@
  */
 
 export interface FireDetectionResult {
-  /** Whether fire was detected */
   detected: boolean;
-  /** Timestamp in seconds where fire was first detected */
   timestamp?: number;
-  /** Human-readable timestamp (e.g. "00:01:23") */
   timestampFormatted?: string;
-  /** Confidence description from the model */
   confidence?: string;
-  /** Human-readable result message */
+  thumbnailBase64?: string;
   message: string;
 }
