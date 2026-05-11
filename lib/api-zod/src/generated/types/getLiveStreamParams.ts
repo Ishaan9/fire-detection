@@ -6,6 +6,9 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export type AnalyzeVideoBody = {
-  video: Blob;
+export type GetLiveStreamParams = {
+  /**
+   * RTSP stream URL
+   */
+  url: string;
 };

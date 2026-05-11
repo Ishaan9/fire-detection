@@ -20,6 +20,7 @@ import type {
   AnalyzeVideoBody,
   ErrorResponse,
   FireDetectionRecord,
+  GetLiveStreamParams,
   HealthStatus,
   SuccessResponse,
 } from "./api.schemas";
@@ -34,7 +35,6 @@ type Awaited<O> = O extends AwaitedInput<infer T> ? T : never;
 type SecondParameter<T extends (...args: never) => unknown> = Parameters<T>[1];
 
 /**
- * Returns server health status
  * @summary Health check
  */
 export const getHealthCheckUrl = () => {
@@ -110,7 +110,6 @@ export function useHealthCheck<
 }
 
 /**
- * Upload a video file and detect the first occurrence of fire. Streams SSE events with progress and result.
  * @summary Analyze video for fire detection
  */
 export const getAnalyzeVideoUrl = () => {
@@ -199,7 +198,104 @@ export const useAnalyzeVideo = <
 };
 
 /**
- * Returns a list of past fire detection analyses
+ * Connects to an RTSP stream and analyzes one frame every 2 seconds. Returns SSE events with frame data and analysis results.
+ * @summary Live RTSP stream fire monitoring
+ */
+export const getGetLiveStreamUrl = (params: GetLiveStreamParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/fire-detection/live-stream?${stringifiedParams}`
+    : `/api/fire-detection/live-stream`;
+};
+
+export const getLiveStream = async (
+  params: GetLiveStreamParams,
+  options?: RequestInit,
+): Promise<string> => {
+  return customFetch<string>(getGetLiveStreamUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetLiveStreamQueryKey = (params?: GetLiveStreamParams) => {
+  return [
+    `/api/fire-detection/live-stream`,
+    ...(params ? [params] : []),
+  ] as const;
+};
+
+export const getGetLiveStreamQueryOptions = <
+  TData = Awaited<ReturnType<typeof getLiveStream>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  params: GetLiveStreamParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getLiveStream>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetLiveStreamQueryKey(params);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getLiveStream>>> = ({
+    signal,
+  }) => getLiveStream(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getLiveStream>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetLiveStreamQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getLiveStream>>
+>;
+export type GetLiveStreamQueryError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Live RTSP stream fire monitoring
+ */
+
+export function useGetLiveStream<
+  TData = Awaited<ReturnType<typeof getLiveStream>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  params: GetLiveStreamParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getLiveStream>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetLiveStreamQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
  * @summary Get fire detection history
  */
 export const getGetFireDetectionHistoryUrl = () => {

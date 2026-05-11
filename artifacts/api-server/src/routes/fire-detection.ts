@@ -1,5 +1,6 @@
 import { Router } from "express";
 import multer from "multer";
+import { spawn } from "child_process";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import fs from "fs/promises";
@@ -38,11 +39,7 @@ async function getVideoDuration(videoPath: string): Promise<number> {
   return parseFloat(stdout.trim()) || 0;
 }
 
-async function extractFrame(
-  videoPath: string,
-  timestamp: number,
-  outputPath: string
-): Promise<void> {
+async function extractFrame(videoPath: string, timestamp: number, outputPath: string): Promise<void> {
   await execFileAsync("ffmpeg", [
     "-ss", String(timestamp),
     "-i", videoPath,
@@ -53,6 +50,43 @@ async function extractFrame(
   ]);
 }
 
+/** Capture a single frame from an RTSP stream into a Buffer */
+function captureRTSPFrame(rtspUrl: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    const proc = spawn("ffmpeg", [
+      "-rtsp_transport", "tcp",
+      "-i", rtspUrl,
+      "-frames:v", "1",
+      "-vf", "scale=640:-1",
+      "-q:v", "3",
+      "-f", "image2",
+      "pipe:1",
+    ], { stdio: ["ignore", "pipe", "ignore"] });
+
+    proc.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
+
+    proc.on("close", (code) => {
+      if (chunks.length > 0) {
+        resolve(Buffer.concat(chunks));
+      } else {
+        reject(new Error(`ffmpeg exited with code ${code ?? "unknown"} — check RTSP URL`));
+      }
+    });
+
+    proc.on("error", reject);
+
+    // Hard timeout: give ffmpeg 15s to deliver a frame
+    const timer = setTimeout(() => {
+      proc.kill("SIGKILL");
+      reject(new Error("Frame capture timed out (15s). Check that the RTSP URL is reachable."));
+    }, 15000);
+
+    proc.on("close", () => clearTimeout(timer));
+  });
+}
+
+/** Analyze a batch of frames from disk paths */
 async function analyzeFramesForFire(
   framePaths: { path: string; timestamp: number }[]
 ): Promise<{ detected: boolean; frameIndex: number; confidence: string } | null> {
@@ -80,9 +114,8 @@ Respond with JSON only, in this exact format:
 
   for (let i = 0; i < framePaths.length; i++) {
     const frameData = await fs.readFile(framePaths[i].path);
-    const b64 = frameData.toString("base64");
     parts.push({ text: `Frame ${i} (at ${formatTimestamp(framePaths[i].timestamp)}):` });
-    parts.push({ inlineData: { mimeType: "image/jpeg", data: b64 } });
+    parts.push({ inlineData: { mimeType: "image/jpeg", data: frameData.toString("base64") } });
   }
 
   let lastError: unknown = null;
@@ -93,15 +126,11 @@ Respond with JSON only, in this exact format:
         contents: [{ role: "user", parts }],
         config: { responseMimeType: "application/json", maxOutputTokens: 8192 },
       });
-
-      const text = response.text ?? "{}";
-      const parsed = JSON.parse(text) as {
+      const parsed = JSON.parse(response.text ?? "{}") as {
         fireDetected: boolean;
         firstFireFrameIndex: number | null;
         confidence: string;
-        reasoning: string;
       };
-
       if (parsed.fireDetected && parsed.firstFireFrameIndex !== null) {
         return { detected: true, frameIndex: parsed.firstFireFrameIndex, confidence: parsed.confidence ?? "medium" };
       }
@@ -109,8 +138,7 @@ Respond with JSON only, in this exact format:
     } catch (err) {
       lastError = err;
       if (isRateLimitError(err)) {
-        const waitMs = Math.min(2000 * Math.pow(2, attempt), 30000);
-        await new Promise((r) => setTimeout(r, waitMs));
+        await new Promise((r) => setTimeout(r, Math.min(2000 * Math.pow(2, attempt), 30000)));
         continue;
       }
       throw err;
@@ -119,13 +147,65 @@ Respond with JSON only, in this exact format:
   throw lastError;
 }
 
-// GET /fire-detection/history
+/** Analyze a single raw JPEG buffer for fire */
+async function analyzeSingleFrameBuffer(
+  frameBuffer: Buffer,
+  wallTimeLabel: string
+): Promise<{ detected: boolean; confidence: string }> {
+  const b64 = frameBuffer.toString("base64");
+
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [{
+          role: "user",
+          parts: [
+            {
+              text: `You are a fire safety AI monitoring a live chemical plant CCTV feed. The current wall-clock time is ${wallTimeLabel}.
+
+Examine this single surveillance frame carefully. Determine whether visible fire is present.
+
+Fire indicators:
+- Active flames (orange, yellow, red, white-hot)
+- Visible combustion or burning at equipment, pipes, tanks, or structures
+- NOT: normal lighting, hot surfaces without flames, steam, or glare
+
+Respond with JSON only:
+{
+  "fireDetected": true or false,
+  "confidence": "high" | "medium" | "low",
+  "reasoning": "<one sentence>"
+}`,
+            },
+            { inlineData: { mimeType: "image/jpeg", data: b64 } },
+          ],
+        }],
+        config: { responseMimeType: "application/json", maxOutputTokens: 512 },
+      });
+
+      const parsed = JSON.parse(response.text ?? "{}") as {
+        fireDetected: boolean;
+        confidence: string;
+      };
+      return { detected: !!parsed.fireDetected, confidence: parsed.confidence ?? "medium" };
+    } catch (err) {
+      lastError = err;
+      if (isRateLimitError(err)) {
+        await new Promise((r) => setTimeout(r, Math.min(2000 * Math.pow(2, attempt), 20000)));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastError;
+}
+
+// ─── GET /fire-detection/history ────────────────────────────────────────────
 router.get("/fire-detection/history", async (req, res) => {
   try {
-    const records = await db
-      .select()
-      .from(fireDetectionsTable)
-      .orderBy(fireDetectionsTable.createdAt);
+    const records = await db.select().from(fireDetectionsTable).orderBy(fireDetectionsTable.createdAt);
     res.json(records.reverse());
   } catch (err) {
     req.log?.error({ err }, "Failed to fetch history");
@@ -133,22 +213,13 @@ router.get("/fire-detection/history", async (req, res) => {
   }
 });
 
-// DELETE /fire-detection/history/:id
+// ─── DELETE /fire-detection/history/:id ─────────────────────────────────────
 router.delete("/fire-detection/history/:id", async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  if (isNaN(id)) {
-    res.status(400).json({ error: "Invalid id" });
-    return;
-  }
+  if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
   try {
-    const deleted = await db
-      .delete(fireDetectionsTable)
-      .where(eq(fireDetectionsTable.id, id))
-      .returning();
-    if (deleted.length === 0) {
-      res.status(404).json({ error: "Record not found" });
-      return;
-    }
+    const deleted = await db.delete(fireDetectionsTable).where(eq(fireDetectionsTable.id, id)).returning();
+    if (deleted.length === 0) { res.status(404).json({ error: "Record not found" }); return; }
     res.json({ success: true });
   } catch (err) {
     req.log?.error({ err }, "Failed to delete history record");
@@ -156,7 +227,93 @@ router.delete("/fire-detection/history/:id", async (req, res) => {
   }
 });
 
-// POST /fire-detection/analyze
+// ─── GET /fire-detection/live-stream ────────────────────────────────────────
+router.get("/fire-detection/live-stream", async (req, res) => {
+  const rtspUrl = typeof req.query.url === "string" ? req.query.url.trim() : "";
+  if (!rtspUrl) {
+    res.status(400).json({ error: "Query param 'url' (RTSP stream URL) is required." });
+    return;
+  }
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+
+  const sendEvent = (data: Record<string, unknown>) => {
+    if (!res.writableEnded) res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  let running = true;
+  req.on("close", () => { running = false; });
+
+  sendEvent({ type: "connected", message: "Live monitoring active. Capturing frames…" });
+
+  while (running) {
+    const iterStart = Date.now();
+
+    try {
+      // 1. Capture frame
+      const frameBuffer = await captureRTSPFrame(rtspUrl);
+      if (!running) break;
+
+      const frameBase64 = `data:image/jpeg;base64,${frameBuffer.toString("base64")}`;
+      const wallTime = new Date().toISOString();
+      const wallTimeLabel = new Date().toLocaleTimeString();
+
+      sendEvent({ type: "frame", frameBase64, wallTime });
+
+      // 2. Analyze frame
+      const result = await analyzeSingleFrameBuffer(frameBuffer, wallTimeLabel);
+      if (!running) break;
+
+      sendEvent({
+        type: "analysis",
+        detected: result.detected,
+        confidence: result.confidence,
+        frameBase64,
+        wallTime,
+      });
+
+      // 3. If fire — persist to history
+      if (result.detected) {
+        try {
+          await db.insert(fireDetectionsTable).values({
+            videoName: `LIVE: ${rtspUrl}`,
+            detected: true,
+            detectedAtSeconds: null,
+            timestampFormatted: wallTimeLabel,
+            confidence: result.confidence,
+            thumbnailBase64: frameBase64,
+          });
+        } catch (dbErr) {
+          req.log?.error({ dbErr }, "Failed to save live detection to history");
+        }
+
+        sendEvent({ type: "fire", frameBase64, wallTime, confidence: result.confidence });
+      }
+    } catch (err) {
+      if (!running) break;
+      const message = err instanceof Error ? err.message : "Unknown error";
+      req.log?.error({ err }, "Live stream frame error");
+      sendEvent({ type: "error", message });
+    }
+
+    // Wait out the remainder of the 2-second interval
+    const elapsed = Date.now() - iterStart;
+    const wait = Math.max(0, 2000 - elapsed);
+    if (running && wait > 0) {
+      await new Promise<void>((r) => {
+        const t = setTimeout(r, wait);
+        req.on("close", () => { clearTimeout(t); r(); });
+      });
+    }
+  }
+
+  if (!res.writableEnded) res.end();
+});
+
+// ─── POST /fire-detection/analyze ───────────────────────────────────────────
 router.post(
   "/fire-detection/analyze",
   upload.single("video"),
@@ -194,19 +351,15 @@ router.post(
 
       const sampleInterval = Math.max(1, Math.ceil(duration / 120));
       const timestamps: number[] = [];
-      for (let t = 0; t < duration; t += sampleInterval) {
-        timestamps.push(t);
-      }
+      for (let t = 0; t < duration; t += sampleInterval) timestamps.push(t);
 
       const totalFrames = timestamps.length;
       sendEvent({
         type: "progress",
         message: `Extracting ${totalFrames} frames from ${formatTimestamp(duration)} video…`,
-        current: 5,
-        total: 100,
+        current: 5, total: 100,
       });
 
-      // Extract frames in parallel batches
       const framePaths: { path: string; timestamp: number }[] = [];
       const extractBatchSize = 10;
       for (let i = 0; i < timestamps.length; i += extractBatchSize) {
@@ -218,16 +371,13 @@ router.post(
             try {
               await extractFrame(videoPath, ts, framePath);
               framePaths.push({ path: framePath, timestamp: ts });
-            } catch {
-              // skip failed frames
-            }
+            } catch { /* skip */ }
           })
         );
-        const extractProgress = Math.round(5 + ((i + extractBatchSize) / timestamps.length) * 30);
         sendEvent({
           type: "progress",
           message: `Extracted ${Math.min(i + extractBatchSize, totalFrames)} / ${totalFrames} frames…`,
-          current: Math.min(extractProgress, 35),
+          current: Math.min(Math.round(5 + ((i + extractBatchSize) / timestamps.length) * 30), 35),
           total: 100,
         });
       }
@@ -240,12 +390,7 @@ router.post(
         return;
       }
 
-      sendEvent({
-        type: "progress",
-        message: `Analyzing ${framePaths.length} frames with Gemini AI…`,
-        current: 40,
-        total: 100,
-      });
+      sendEvent({ type: "progress", message: `Analyzing ${framePaths.length} frames with Gemini AI…`, current: 40, total: 100 });
 
       const chunkSize = 8;
       let fireDetectedAt: { timestamp: number; confidence: string; framePath: string } | null = null;
@@ -255,26 +400,17 @@ router.post(
       for (let i = 0; i < framePaths.length; i += chunkSize) {
         const chunk = framePaths.slice(i, i + chunkSize);
         analyzedChunks++;
-
-        const chunkStartTime = chunk[0].timestamp;
-        const chunkEndTime = chunk[chunk.length - 1].timestamp;
-
         sendEvent({
           type: "progress",
-          message: `Scanning ${formatTimestamp(chunkStartTime)} – ${formatTimestamp(chunkEndTime)} (chunk ${analyzedChunks}/${totalChunks})…`,
+          message: `Scanning ${formatTimestamp(chunk[0].timestamp)} – ${formatTimestamp(chunk[chunk.length - 1].timestamp)} (chunk ${analyzedChunks}/${totalChunks})…`,
           current: Math.round(40 + (analyzedChunks / totalChunks) * 55),
           total: 100,
         });
 
         const result = await analyzeFramesForFire(chunk);
-
         if (result?.detected && result.frameIndex >= 0 && result.frameIndex < chunk.length) {
           const detectedFrame = chunk[result.frameIndex];
-          fireDetectedAt = {
-            timestamp: detectedFrame.timestamp,
-            confidence: result.confidence,
-            framePath: detectedFrame.path,
-          };
+          fireDetectedAt = { timestamp: detectedFrame.timestamp, confidence: result.confidence, framePath: detectedFrame.path };
           break;
         }
       }
@@ -282,16 +418,12 @@ router.post(
       sendEvent({ type: "progress", message: "Analysis complete.", current: 100, total: 100 });
 
       if (fireDetectedAt) {
-        // Read thumbnail as base64
         let thumbnailBase64: string | null = null;
         try {
           const thumbData = await fs.readFile(fireDetectedAt.framePath);
           thumbnailBase64 = `data:image/jpeg;base64,${thumbData.toString("base64")}`;
-        } catch {
-          // thumbnail is best-effort
-        }
+        } catch { /* best-effort */ }
 
-        // Persist to history
         try {
           await db.insert(fireDetectionsTable).values({
             videoName,
@@ -301,9 +433,7 @@ router.post(
             confidence: fireDetectedAt.confidence,
             thumbnailBase64,
           });
-        } catch (err) {
-          req.log?.error({ err }, "Failed to save detection to history");
-        }
+        } catch (err) { req.log?.error({ err }, "Failed to save detection to history"); }
 
         sendEvent({
           type: "result",
@@ -315,42 +445,21 @@ router.post(
           message: `Fire first detected at ${formatTimestamp(fireDetectedAt.timestamp)}`,
         });
       } else {
-        // Persist no-fire result
         try {
-          await db.insert(fireDetectionsTable).values({
-            videoName,
-            detected: false,
-            detectedAtSeconds: null,
-            timestampFormatted: null,
-            confidence: null,
-            thumbnailBase64: null,
-          });
-        } catch (err) {
-          req.log?.error({ err }, "Failed to save no-detection to history");
-        }
+          await db.insert(fireDetectionsTable).values({ videoName, detected: false, detectedAtSeconds: null, timestampFormatted: null, confidence: null, thumbnailBase64: null });
+        } catch (err) { req.log?.error({ err }, "Failed to save no-detection to history"); }
 
-        sendEvent({
-          type: "result",
-          detected: false,
-          message: "No fire detected in the video.",
-        });
+        sendEvent({ type: "result", detected: false, message: "No fire detected in the video." });
       }
 
       res.end();
     } catch (err) {
-      const message = err instanceof Error ? err.message : "An unexpected error occurred.";
       req.log?.error({ err }, "Fire detection analysis failed");
-      sendEvent({ type: "error", message });
+      sendEvent({ type: "error", message: err instanceof Error ? err.message : "An unexpected error occurred." });
       res.end();
     } finally {
-      try {
-        await fs.rm(tempDir, { recursive: true, force: true });
-      } catch { /* ignore */ }
-      if (file?.path) {
-        try {
-          await fs.unlink(file.path);
-        } catch { /* ignore */ }
-      }
+      try { await fs.rm(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      if (file?.path) { try { await fs.unlink(file.path); } catch { /* ignore */ } }
     }
   }
 );

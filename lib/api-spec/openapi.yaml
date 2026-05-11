@@ -18,7 +18,6 @@ paths:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -31,7 +30,6 @@ paths:
       operationId: analyzeVideo
       tags: [fire-detection]
       summary: Analyze video for fire detection
-      description: Upload a video file and detect the first occurrence of fire. Streams SSE events with progress and result.
       requestBody:
         required: true
         content:
@@ -42,12 +40,11 @@ paths:
                 video:
                   type: string
                   format: binary
-                  description: Video file to analyze
               required:
                 - video
       responses:
         "200":
-          description: SSE stream with detection progress and result
+          description: SSE stream
           content:
             text/event-stream:
               schema:
@@ -58,8 +55,28 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-        "500":
-          description: Internal server error
+  /fire-detection/live-stream:
+    get:
+      operationId: getLiveStream
+      tags: [fire-detection]
+      summary: Live RTSP stream fire monitoring
+      description: Connects to an RTSP stream and analyzes one frame every 2 seconds. Returns SSE events with frame data and analysis results.
+      parameters:
+        - name: url
+          in: query
+          required: true
+          schema:
+            type: string
+          description: RTSP stream URL
+      responses:
+        "200":
+          description: SSE stream with live frame analysis
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "400":
+          description: Bad request
           content:
             application/json:
               schema:
@@ -69,7 +86,6 @@ paths:
       operationId: getFireDetectionHistory
       tags: [fire-detection]
       summary: Get fire detection history
-      description: Returns a list of past fire detection analyses
       responses:
         "200":
           description: List of fire detection records
@@ -126,24 +142,6 @@ components:
           type: boolean
       required:
         - success
-    FireDetectionResult:
-      type: object
-      properties:
-        detected:
-          type: boolean
-        timestamp:
-          type: number
-        timestampFormatted:
-          type: string
-        confidence:
-          type: string
-        thumbnailBase64:
-          type: string
-        message:
-          type: string
-      required:
-        - detected
-        - message
     FireDetectionRecord:
       type: object
       properties:

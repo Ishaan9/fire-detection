@@ -17,15 +17,6 @@ export interface SuccessResponse {
   success: boolean;
 }
 
-export interface FireDetectionResult {
-  detected: boolean;
-  timestamp?: number;
-  timestampFormatted?: string;
-  confidence?: string;
-  thumbnailBase64?: string;
-  message: string;
-}
-
 export interface FireDetectionRecord {
   id: number;
   videoName: string;
@@ -38,6 +29,12 @@ export interface FireDetectionRecord {
 }
 
 export type AnalyzeVideoBody = {
-  /** Video file to analyze */
   video: Blob;
+};
+
+export type GetLiveStreamParams = {
+  /**
+   * RTSP stream URL
+   */
+  url: string;
 };

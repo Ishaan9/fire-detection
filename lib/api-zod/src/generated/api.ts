@@ -8,7 +8,6 @@
 import * as zod from "zod";
 
 /**
- * Returns server health status
  * @summary Health check
  */
 export const HealthCheckResponse = zod.object({
@@ -16,15 +15,21 @@ export const HealthCheckResponse = zod.object({
 });
 
 /**
- * Upload a video file and detect the first occurrence of fire. Streams SSE events with progress and result.
  * @summary Analyze video for fire detection
  */
 export const AnalyzeVideoBody = zod.object({
-  video: zod.instanceof(File).describe("Video file to analyze"),
+  video: zod.instanceof(File),
 });
 
 /**
- * Returns a list of past fire detection analyses
+ * Connects to an RTSP stream and analyzes one frame every 2 seconds. Returns SSE events with frame data and analysis results.
+ * @summary Live RTSP stream fire monitoring
+ */
+export const GetLiveStreamQueryParams = zod.object({
+  url: zod.coerce.string().describe("RTSP stream URL"),
+});
+
+/**
  * @summary Get fire detection history
  */
 export const GetFireDetectionHistoryResponseItem = zod.object({
