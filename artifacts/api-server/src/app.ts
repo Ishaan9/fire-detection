@@ -41,7 +41,7 @@ const frontendPath = path.resolve(__dirname, "../../fire-detector/dist/public");
 app.use(express.static(frontendPath));
 
 // Catch-all: serve index.html for any non-API route
-app.get("*", (req, res) => {
+app.get("/{*path}", (req, res) => {
   res.sendFile(path.join(frontendPath, "index.html"));
 });
 
